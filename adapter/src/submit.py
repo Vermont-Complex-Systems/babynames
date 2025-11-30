@@ -12,12 +12,12 @@ from storywrangler.validation import EndpointValidator
 load_dotenv()
 
 
-def get_ducklake_table_metadata():
+def get_ducklake_table_metadata(data_path: str):
     """Extract table metadata from ducklake for API registration."""
     import duckdb
 
     conn = duckdb.connect()
-    conn.execute("ATTACH 'ducklake:metadata.ducklake' AS babylake (DATA_PATH '/users/j/s/jstonge1/data/babynames');")
+    conn.execute(f"ATTACH 'ducklake:metadata.ducklake' AS babylake (DATA_PATH '{data_path}');")
 
     # Get current file metadata for each table
     tables_metadata = {}
@@ -45,10 +45,13 @@ def get_ducklake_table_metadata():
     return tables_metadata
 
 
-def register_babynames_datalake(api_url: str = "http://localhost:8000"):
+def register_babynames_datalake(api_url: str = None):
     """Register babynames dataset with the datalakes API."""
 
-    data_location = "/users/j/s/jstonge1/data/babynames"
+    # Get configuration from environment variables
+    dataset_id = os.getenv("DATASET_ID")
+    data_location = os.getenv("DATA_PATH")
+    api_url = api_url or os.getenv("API_URL", "http://localhost:8000")
 
     # Validate schema against Storywrangler standards before registration
     print("🔍 Validating babynames schema against Storywrangler standards...")
@@ -56,7 +59,7 @@ def register_babynames_datalake(api_url: str = "http://localhost:8000"):
 
     import duckdb
     conn = duckdb.connect()
-    conn.execute("ATTACH 'ducklake:metadata.ducklake' AS babylake (DATA_PATH '/users/j/s/jstonge1/data/babynames');")
+    conn.execute(f"ATTACH 'ducklake:metadata.ducklake' AS babylake (DATA_PATH '{data_location}');")
 
     try:
         # Get babynames schema
@@ -80,11 +83,11 @@ def register_babynames_datalake(api_url: str = "http://localhost:8000"):
         conn.close()
 
     # Get current table metadata from ducklake
-    tables_metadata = get_ducklake_table_metadata()
+    tables_metadata = get_ducklake_table_metadata(data_location)
 
     # Dataset metadata for registration
     dataset_metadata = {
-        "dataset_id": "babynames",
+        "dataset_id": dataset_id,
         "data_location": data_location,
         "data_format": "ducklake",
         "description": "US Baby names by popularity and year with entity mappings",
@@ -110,7 +113,7 @@ def register_babynames_datalake(api_url: str = "http://localhost:8000"):
         )
 
         if response.status_code in [200, 201]:
-            print(f"✅ Babynames datalake registered successfully!")
+            print(f"✅ {dataset_id} datalake registered successfully!")
             result = response.json()
             print(f"✅ Response: {result['message']}")
             return True
@@ -133,11 +136,15 @@ def main():
 
     import argparse
 
-    parser = argparse.ArgumentParser(description="Register babynames datalake with API")
+    # Get default values from environment
+    default_api_url = os.getenv("API_URL", "http://localhost:8000")
+    dataset_id = os.getenv("DATASET_ID", "babynames")
+
+    parser = argparse.ArgumentParser(description=f"Register {dataset_id} datalake with API")
     parser.add_argument(
         "--api-url",
-        default="http://localhost:8000",
-        help="FastAPI URL (default: http://localhost:8000)"
+        default=default_api_url,
+        help=f"FastAPI URL (default: {default_api_url})"
     )
 
     args = parser.parse_args()
@@ -145,9 +152,9 @@ def main():
     success = register_babynames_datalake(args.api_url)
 
     if success:
-        print(f"\n🚀 Babynames datalake is now available!")
-        print(f"📊 Try querying: GET {args.api_url}/datalakes/babynames?start_year=1940&end_year=1943")
-        print(f"📋 View schema: GET {args.api_url}/datalakes/babynames/schema")
+        print(f"\n🚀 {dataset_id} datalake is now available!")
+        print(f"📊 Try querying: GET {args.api_url}/datalakes/{dataset_id}/top-ngrams?start_year=1940&end_year=1943")
+        print(f"📋 View info: GET {args.api_url}/datalakes/{dataset_id}")
         print(f"📋 List all: GET {args.api_url}/datalakes/")
     else:
         print(f"\n❌ Registration failed")

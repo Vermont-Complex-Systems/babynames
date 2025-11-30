@@ -19,12 +19,18 @@ from typing import Dict
 from storywrangler.validation import EntityValidator, EndpointValidator
 from pyprojroot import here
 import duckdb
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 class BabynamesAdapter:
 
     def __init__(self):
         self.project_root = here()
-        self.data_root = Path("/users/j/s/jstonge1/data/babynames")
+        self.dataset_id = os.getenv("DATASET_ID")
+        self.data_path = Path(os.getenv("DATA_PATH"))
         self.entity_validator = EntityValidator()
         self.endpoint_validator = EndpointValidator()
         self.ducklake_path = self.project_root / "metadata.ducklake"
@@ -44,9 +50,10 @@ class BabynamesAdapter:
             raise FileNotFoundError(f"Ducklake file not found: {self.ducklake_path}")
 
         conn = duckdb.connect()
-        conn.execute("ATTACH 'ducklake:metadata.ducklake' AS babylake (DATA_PATH '/users/j/s/jstonge1/data/babynames');")
+        conn.execute(f"ATTACH 'ducklake:metadata.ducklake' AS babylake (DATA_PATH '{self.data_path}');")
         conn.execute("USE babylake;")
         print(f"📊 Connected to ducklake: {self.ducklake_path}")
+        print(f"📊 Data path: {self.data_path}")
         return conn
 
     def create_adapter_table(self, conn: duckdb.DuckDBPyConnection):
@@ -86,25 +93,6 @@ class BabynamesAdapter:
 
         print(f"  ✓ {entity_data['entity_name']} → {entity_data['entity_id']}")
 
-    def export_adapter_to_parquet(self, conn: duckdb.DuckDBPyConnection):
-        """Export adapter table to parquet for API access"""
-        print("📦 Exporting adapter table to parquet...")
-
-        adapter_dir = self.data_root / "main" / "adapter"
-        adapter_dir.mkdir(parents=True, exist_ok=True)
-        adapter_path = adapter_dir / "adapter.parquet"
-
-        # Remove existing parquet file to avoid duplicates
-        if adapter_path.exists():
-            adapter_path.unlink()
-
-        # Export adapter table to parquet
-        conn.execute(f"""
-            COPY adapter TO '{adapter_path}' (FORMAT PARQUET)
-        """)
-
-        print(f"  ✓ Adapter exported to {adapter_path}")
-
     def validate_babynames_schema(self, conn: duckdb.DuckDBPyConnection):
         """Validate that babynames data conforms to top-ngrams endpoint schema"""
         print("🔍 Validating babynames schema against Storywrangler standards...")
@@ -141,9 +129,6 @@ class BabynamesAdapter:
             # Create/update entity lookup table
             self.create_adapter_table(conn)
 
-            # Export adapter table to parquet for API access
-            self.export_adapter_to_parquet(conn)
-
             print(f"✅ Entity mappings created in ducklake")
             print(f"✅ Adapter complete")
 
@@ -155,13 +140,14 @@ class BabynamesAdapter:
 def main():
     """Run the adapter"""
 
-    print(f"📁 Paths:")
-    print(f"  Data root: /users/j/s/jstonge1/data/babynames")
-    print(f"  DuckDB: {here()}/metadata.ducklake")
-    print()
-
-    # Prepare (uses ~/data/babynames by default)
+    # Initialize adapter (reads from .env)
     adapter = BabynamesAdapter()
+
+    print(f"📁 Configuration:")
+    print(f"  Dataset ID: {adapter.dataset_id}")
+    print(f"  Data path: {adapter.data_path}")
+    print(f"  DuckDB: {adapter.ducklake_path}")
+    print()
 
     # Check DuckDB exists
     if not adapter.ducklake_path.exists():
