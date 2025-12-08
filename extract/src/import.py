@@ -1,49 +1,46 @@
+"""Main import orchestrator - loads data from all locations into DuckDB"""
 import duckdb
-from pyprojroot import here
-import re
-from pathlib import Path
-import sys
 import argparse
+from loaders.united_states import UnitedStatesLoader
+from loaders.quebec import QuebecLoader
 
 
-def load_US(conn):
-    conn.execute("""
-        CREATE TABLE babynames AS
-        SELECT
-            split_part(filename, '/', 3) AS countries,
-            CAST(
-                replace(
-                    replace(split_part(filename, '/', 4), 'yob', ''),
-                    '.txt', ''
-                ) AS INTEGER
-            ) AS year,
-            name AS types,
-            CAST(count AS INTEGER) AS counts,
-            sex
-        FROM read_csv_auto(
-            'extract/input/united_states/yob*.txt',
-            columns = {
-                'name': 'TEXT',
-                'sex': 'TEXT',
-                'count': 'INT'
-            },
-            filename = TRUE
-        );
-    """)
+# Registry of all available loaders
+LOADERS = {
+    "united_states": UnitedStatesLoader(),
+    "quebec": QuebecLoader(),
+}
+
+
+def load_location(conn, location):
+    """Load data for a specific location using its loader"""
+    location_normalized = location.lower().replace(" ", "_")
+
+    if location_normalized not in LOADERS:
+        available = ", ".join(LOADERS.keys())
+        raise ValueError(f"No loader found for location: {location}. Available: {available}")
+
+    loader = LOADERS[location_normalized]
+    print(f"Loading data for: {loader.location_name}")
+    loader.load(conn)
+    print(f"✓ Successfully loaded {loader.location_name}")
 
 
 def main(location):
-    
+    """Load data for a specific location"""
+
     conn = duckdb.connect()
-    conn.execute("ATTACH 'ducklake:metadata.ducklake' AS babylake (DATA_PATH '/users/j/s/jstonge1/data/babynames');")
-    conn.execute("USE babylake;")
-    
-    if location == "United States":
-        load_US(conn)
+    try:
+        conn.execute("ATTACH 'ducklake:metadata.ducklake' AS babylake;")
+        conn.execute("USE babylake;")
+        load_location(conn, location)
+    finally:
+        conn.close()
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('location', default="United States")
+    parser = argparse.ArgumentParser(description="Import baby names data into DuckDB")
+    parser.add_argument('location',
+                       help="Location to import (e.g., 'united_states', 'quebec')")
     args = parser.parse_args()
     main(args.location)

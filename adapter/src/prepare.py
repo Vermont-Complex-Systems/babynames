@@ -22,7 +22,6 @@ import duckdb
 import os
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
 class BabynamesAdapter:
@@ -35,13 +34,21 @@ class BabynamesAdapter:
         self.endpoint_validator = EndpointValidator()
         self.ducklake_path = self.project_root / "metadata.ducklake"
     
-    def get_country_entity(self) -> Dict:
-        """Map US to entity identifiers"""
+    def get_entity_mappings(self) -> Dict[str, Dict]:
+        """Map location local_ids to entity identifiers"""
         return {
-            "local_id": "united_states",
-            "entity_id": "wikidata:Q30",
-            "entity_ids": ["iso:US", "local:babynames:united_states"],
-            "entity_name": "United States",
+            "united_states": {
+                "local_id": "united_states",
+                "entity_id": "wikidata:Q30",
+                "entity_ids": ["iso:US", "local:babynames:united_states"],
+                "entity_name": "United States",
+            },
+            "quebec": {
+                "local_id": "quebec",
+                "entity_id": "wikidata:Q176",
+                "entity_ids": ["iso:CA-QC", "local:babynames:quebec"],
+                "entity_name": "Quebec",
+            },
         }
     
     def connect_ducklake(self) -> duckdb.DuckDBPyConnection:
@@ -50,48 +57,75 @@ class BabynamesAdapter:
             raise FileNotFoundError(f"Ducklake file not found: {self.ducklake_path}")
 
         conn = duckdb.connect()
-        conn.execute(f"ATTACH 'ducklake:metadata.ducklake' AS babylake (DATA_PATH '{self.data_path}');")
+        conn.execute(f"ATTACH 'ducklake:metadata.ducklake' AS babylake;")
         conn.execute("USE babylake;")
         print(f"📊 Connected to ducklake: {self.ducklake_path}")
         print(f"📊 Data path: {self.data_path}")
         return conn
 
     def create_adapter_table(self, conn: duckdb.DuckDBPyConnection):
-        """Create/update the adapter lookup table"""
-        print("🔧 Creating adapter lookup table...")
+        """Create adapter table if it doesn't exist"""
+        # Check if adapter table exists
+        tables = [x[0] for x in conn.execute("SHOW TABLES").fetchall()]
 
-        # Drop existing table if it exists
-        conn.execute("DROP TABLE IF EXISTS adapter")
+        if 'adapter' not in tables:
+            print("🔧 Creating adapter table...")
+            conn.execute("""
+                CREATE TABLE adapter (
+                    local_id VARCHAR,
+                    entity_id VARCHAR,
+                    entity_name VARCHAR,
+                    entity_ids VARCHAR[]
+                )
+            """)
+        else:
+            print("📊 Adapter table already exists")
 
-        # Create the lookup table
-        conn.execute("""
-            CREATE TABLE adapter (
-                local_id VARCHAR,
-                entity_id VARCHAR,
-                entity_name VARCHAR,
-                entity_ids VARCHAR[]
-            )
-        """)
+    def sync_entity_mappings(self, conn: duckdb.DuckDBPyConnection):
+        """Insert entity mappings for all locations in babynames table"""
+        entity_mappings = self.get_entity_mappings()
 
-        # Insert mapping for US (should be more general)
-        entity_data = self.get_country_entity()
+        # Check if there are any new locations to map
+        new_count = conn.execute("""
+            SELECT COUNT(DISTINCT b.geo)
+            FROM babynames b
+            LEFT JOIN adapter a ON b.geo = a.local_id
+            WHERE a.local_id IS NULL
+        """).fetchone()[0]
 
-        # Validate entity ID
-        if not self.entity_validator.validate(entity_data["entity_id"]):
-            raise ValueError(f"Invalid entity_id: {entity_data['entity_id']}")
+        if new_count == 0:
+            print("✓ All locations already mapped")
+            return
 
-        conn.execute("""
-            INSERT INTO adapter
-            (local_id, entity_id, entity_name, entity_ids)
-            VALUES (?, ?, ?, ?)
-        """, [
-            entity_data["local_id"],
-            entity_data["entity_id"],
-            entity_data["entity_name"],
-            entity_data["entity_ids"]
-        ])
+        # Get new locations
+        locations = conn.execute("""
+            SELECT DISTINCT b.geo
+            FROM babynames b
+            LEFT JOIN adapter a ON b.geo = a.local_id
+            WHERE a.local_id IS NULL
+        """).fetchall()
 
-        print(f"  ✓ {entity_data['entity_name']} → {entity_data['entity_id']}")
+        # Prepare rows for insertion
+        rows = []
+        for (location,) in locations:
+            if location not in entity_mappings:
+                raise ValueError(f"No entity mapping defined for '{location}'")
+
+            mapping = entity_mappings[location]
+
+            # Validate entity ID
+            if not self.entity_validator.validate(mapping["entity_id"]):
+                raise ValueError(f"Invalid entity_id: {mapping['entity_id']}")
+
+            rows.append((mapping["local_id"], mapping["entity_id"],
+                        mapping["entity_name"], mapping["entity_ids"]))
+
+        # Insert new mappings
+        conn.executemany(
+            "INSERT INTO adapter (local_id, entity_id, entity_name, entity_ids) VALUES (?, ?, ?, ?)",
+            rows
+        )
+        print(f"✓ Inserted {len(rows)} new mapping(s)")
 
     def validate_babynames_schema(self, conn: duckdb.DuckDBPyConnection):
         """Validate that babynames data conforms to top-ngrams endpoint schema"""
@@ -116,21 +150,29 @@ class BabynamesAdapter:
         return validation['column_mapping']
 
     def prepare(self):
-        """Prepare dataset metadata and update DuckDB with entity mappings"""
-        print("🔧 Preparing Babynames dataset with DuckDB\n")
+        """Prepare dataset metadata and update DuckDB with entity mappings
+
+        Steps:
+        1. Validate babynames schema conforms to top-ngrams endpoint
+        2. Create adapter table if it doesn't exist
+        3. Insert new entity mappings for locations in the database
+        """
+        print("🔧 Preparing Babynames dataset\n")
 
         # Connect to DuckDB
         conn = self.connect_ducklake()
 
         try:
-            # Validate babynames schema against Storywrangler standards
+            # (i) Validate babynames schema against Storywrangler standards
             self.validate_babynames_schema(conn)
 
-            # Create/update entity lookup table
+            # (ii) Create adapter table if it doesn't exist
             self.create_adapter_table(conn)
 
-            print(f"✅ Entity mappings created in ducklake")
-            print(f"✅ Adapter complete")
+            # (iii) Insert new entity mappings (existing ones are skipped)
+            self.sync_entity_mappings(conn)
+
+            print(f"\n✅ Adapter complete")
 
         finally:
             conn.close()
