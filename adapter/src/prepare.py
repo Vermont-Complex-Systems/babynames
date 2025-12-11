@@ -4,14 +4,21 @@ Babynames Adapter
 Prepares baby names data for submission to Storywrangler API.
 
 Type of submission: Pattern 2 - Location entities with pre-computed n-grams
-Schema:
+
+Babynames Schema:
   - types: str (baby name)
   - counts: int (number of babies)
   - countries: str (country/state)
   - year: int (birth year)
   - sex: str (M/F)
-Primary key: countries using wikidata identifier
-Dataset metadata:
+
+Adapter Schema:
+  - local_id: str (location identifier in source data)
+  - entity_id: str (Wikidata entity ID, e.g., wikidata:Q30)
+  - entity_name: str (human-readable name)
+  - entity_ids: str[] (additional identifiers: ISO codes, local IDs)
+  - start_year: int (earliest year with data for this location)
+  - end_year: int (latest year with data for this location)
 """
 
 from pathlib import Path
@@ -75,7 +82,9 @@ class BabynamesAdapter:
                     local_id VARCHAR,
                     entity_id VARCHAR,
                     entity_name VARCHAR,
-                    entity_ids VARCHAR[]
+                    entity_ids VARCHAR[],
+                    start_year INTEGER,
+                    end_year INTEGER
                 )
             """)
         else:
@@ -97,17 +106,21 @@ class BabynamesAdapter:
             print("✓ All locations already mapped")
             return
 
-        # Get new locations
-        locations = conn.execute("""
-            SELECT DISTINCT b.geo
+        # Get new locations with their time ranges
+        locations_with_years = conn.execute("""
+            SELECT
+                b.geo,
+                MIN(b.year) as start_year,
+                MAX(b.year) as end_year
             FROM babynames b
             LEFT JOIN adapter a ON b.geo = a.local_id
             WHERE a.local_id IS NULL
+            GROUP BY b.geo
         """).fetchall()
 
         # Prepare rows for insertion
         rows = []
-        for (location,) in locations:
+        for location, start_year, end_year in locations_with_years:
             if location not in entity_mappings:
                 raise ValueError(f"No entity mapping defined for '{location}'")
 
@@ -118,11 +131,12 @@ class BabynamesAdapter:
                 raise ValueError(f"Invalid entity_id: {mapping['entity_id']}")
 
             rows.append((mapping["local_id"], mapping["entity_id"],
-                        mapping["entity_name"], mapping["entity_ids"]))
+                        mapping["entity_name"], mapping["entity_ids"],
+                        start_year, end_year))
 
         # Insert new mappings
         conn.executemany(
-            "INSERT INTO adapter (local_id, entity_id, entity_name, entity_ids) VALUES (?, ?, ?, ?)",
+            "INSERT INTO adapter (local_id, entity_id, entity_name, entity_ids, start_year, end_year) VALUES (?, ?, ?, ?, ?, ?)",
             rows
         )
         print(f"✓ Inserted {len(rows)} new mapping(s)")
